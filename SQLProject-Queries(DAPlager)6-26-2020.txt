@@ -1,0 +1,83 @@
+/* Query for Slide 1 and related to Question Set 1, Question 1 */
+
+/* A main query joining a subtable that identifies each film's category with a second subtable that provides the overall number of times each film has been rented and subsequent filtering to only output family-friendly film categories */ 
+
+SELECT film_title, category_name, rental_count,
+       COUNT(*) OVER(PARTITION BY category_name ORDER BY rental_count, 
+       film_title) AS run_categ_film_ct,
+       SUM(rental_count) OVER(PARTITION BY category_name ORDER BY rental_count, 
+       film_title) AS run_categ_rentals
+  FROM (SELECT f.film_id AS film_id, f.title AS film_title, f.release_year, c.name AS category_name
+          FROM film f JOIN film_category fc ON f.film_id = fc.film_id
+               JOIN category c ON fc.category_id = c.category_id ) AS film_categ    -- Film category subtable.
+       JOIN (SELECT f.film_id AS film_id, COUNT(r.rental_id) AS rental_count
+               FROM film f LEFT JOIN inventory i ON f.film_id = i.film_id
+                    LEFT JOIN rental r ON i.inventory_id = r.inventory_id
+              GROUP BY 1 ) AS film_rent_ct    -- Film total rental counts subtable w/ LEFT JOINs to include 0-rental films.
+         ON film_categ.film_id = film_rent_ct.film_id
+ WHERE category_name IN ('Animation', 'Children', 'Classics', 'Comedy', 'Family', 'Music')
+ ORDER BY 2, 3;
+
+
+
+/* Query for Slide 2 and related to Question Set 1, Question 2 */
+
+/* A main query using a Common Table Expression (CTE; i.e., duration_level) that categorizes each film based on its quartile rank with respect to its rental duration among all films and as identified by a preceding CTE (quartile_table) */
+
+WITH quartile_table AS      -- A subtable dividing each film into the appropriate quartile based on its rental duration.
+     (SELECT film_id, title, rental_duration, 
+             NTILE(4) OVER(ORDER BY rental_duration) AS quartile
+        FROM film),
+
+     duration_level AS      -- A subtable categorizing each film based on its "quarter" (i.e., quartile) and whether it is                                      family-friendly.
+     (SELECT qt.title AS film_title, c.name AS category_name, qt.rental_duration, qt.quartile,
+             CASE WHEN qt.quartile = 1 THEN 'first_quarter' WHEN qt.quartile = 2 THEN 'second_quarter' 
+             WHEN qt.quartile = 3 THEN 'third_quarter' WHEN qt.quartile = 4 THEN 'final_quarter' END AS rental_duration_level,                CASE WHEN c.name IN('Animation', 'Children', 'Classics', 'Comedy', 'Family', 'Music') THEN 'Family' 
+             ELSE 'Other' END AS film_type
+        FROM quartile_table qt
+             JOIN film_category fc ON qt.film_id = fc.film_id
+             JOIN category c ON fc.category_id = c.category_id )
+         
+SELECT film_title, category_name, quartile, rental_duration_level, film_type,
+       COUNT(rental_duration_level) OVER(PARTITION BY film_type, rental_duration_level) AS film_type_level_ct
+  FROM duration_level
+ ORDER BY 5, 4;
+
+
+
+/* Query for Slide 3 and related to Question Set 2, Question 1 */
+
+/* A main query using a subtable that initially identifies the store with which each rented inventory item is associated and subsequently provides a count of the number of rentals per month at each store */
+
+SELECT DISTINCT DATE_PART('year', year_month) || '-' || 
+       DATE_PART('month', year_month) AS rental_yr_month, store_id, 
+       COUNT(*) OVER(PARTITION BY year_month, store_id) AS rental_count
+  FROM (SELECT r.rental_id, r.rental_date, DATE_TRUNC('month', r.rental_date) AS year_month, i.store_id 
+          FROM rental r JOIN inventory i ON r.inventory_id = i.inventory_id ) AS date_store
+ ORDER BY 1, 2, 3;
+
+
+
+/* Query for Slide 4 and related to Question Set 2, Question 2 */
+
+/* A main query using two subtables (CTEs) that provides the number of payments and the total usd amount of the payments by month in 2007 for each of the top 10 overall spending customers */
+
+WITH top10_table AS      -- A subtable identifying the top 10 overall spending customers.
+     (SELECT customer_id AS top10_customers, SUM(amount) AS total_spent
+        FROM payment
+       GROUP BY customer_id
+       ORDER BY 2 DESC
+       LIMIT 10),
+
+     mo_payments AS      -- A subtable identifying each customer's payments and the month in which they were paid.
+     (SELECT DATE_TRUNC('month', p.payment_date) AS pay_year_month, p.amount, p.customer_id, 
+             c.first_name || ' ' || c.last_name AS full_name
+        FROM payment p JOIN customer c ON p.customer_id = c.customer_id 
+             AND p.customer_id IN (SELECT top10_customers FROM top10_table))   
+
+SELECT full_name, DATE_PART('year', pay_year_month) || '-' || DATE_PART('month', pay_year_month) AS yr_month, 
+       COUNT(*) AS pay_count_mo, SUM(amount) AS pay_amount_mo
+  FROM mo_payments
+ WHERE DATE_PART('year', pay_year_month) = 2007
+ GROUP BY 1, 2
+ ORDER BY 1, 2;
